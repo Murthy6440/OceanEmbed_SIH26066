@@ -1,0 +1,16 @@
+{
+  "note": "Computed on REAL Argo float data (Indian Ocean region).",
+  "n_test_samples": 252659,
+  "temperature": {
+    "rmse": 0.9318045377731323,
+    "correlation": 0.9887184771133753,
+    "bias": -0.04960358887910843,
+    "units": "deg C"
+  },
+  "salinity": {
+    "rmse": 0.13649851083755493,
+    "correlation": 0.9837462229674947,
+    "bias": -0.028928043320775032,
+    "units": "psu"
+  }
+}
