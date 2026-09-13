@@ -19,6 +19,8 @@ export default function MapCard({
   onDemoAlert,
   predictionLoading,
   backendOnline,
+  selectedDate,
+  onDateChange,
 }) {
   const [depthMin, depthMax] = domain.depth_range_m;
 
@@ -82,6 +84,17 @@ export default function MapCard({
                 </option>
               ))}
             </select>
+          </div>
+
+          <div className="control-block">
+            <span className="control-label">Satellite date / time</span>
+            <input
+              type="datetime-local"
+              value={selectedDate?.slice(0, 16) || "2024-01-15T12:00"}
+              onChange={(e) => {
+                if (e.target.value) onDateChange(`${e.target.value}:00`);
+              }}
+            />
           </div>
 
           <div className="control-block">

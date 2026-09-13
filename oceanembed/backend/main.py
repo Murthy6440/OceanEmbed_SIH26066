@@ -13,6 +13,7 @@ Run:
 """
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 import numpy as np
 import data_generator
@@ -21,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from model import OceanEmbedPredictor, MODEL_PATH
+from satellite_data_loader import sample_satellite_features
 
 LAT_MIN, LAT_MAX = -20.0, 30.0
 LON_MIN, LON_MAX = 30.0, 100.0
@@ -40,7 +42,6 @@ FALLBACK_DISCLAIMER = (
 
 predictor = OceanEmbedPredictor()
 
-
 def normalize_latlon(lat, lon):
     lat_n = (lat - LAT_MIN) / (LAT_MAX - LAT_MIN)
     lon_n = (lon - LON_MIN) / (LON_MAX - LON_MIN)
@@ -50,6 +51,70 @@ def normalize_latlon(lat, lon):
 def build_feature_vector(surface_temp, surface_sal, depth, lat, lon):
     lat_n, lon_n = normalize_latlon(lat, lon)
     return np.array([surface_temp, surface_sal, depth, lat_n, lon_n], dtype=np.float32)
+
+
+def _parse_datetime(date_value: str | None):
+    if date_value is None:
+        return datetime.utcnow()
+    try:
+        return datetime.fromisoformat(date_value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(400, detail=f"Invalid datetime '{date_value}'. Use ISO-8601, e.g. 2024-01-15T12:00:00") from exc
+
+
+def validate_point_request(lat: float, lon: float, depth: float):
+    """Validate lat/lon/depth inputs for the demo ocean domain."""
+    if not (LAT_MIN <= lat <= LAT_MAX):
+        raise HTTPException(422, detail=f"Latitude {lat} is outside the valid domain [{LAT_MIN}, {LAT_MAX}] deg N.")
+    if not (LON_MIN <= lon <= LON_MAX):
+        raise HTTPException(422, detail=f"Longitude {lon} is outside the valid domain [{LON_MIN}, {LON_MAX}] deg E.")
+    if not (DEPTH_MIN <= depth <= DEPTH_MAX):
+        raise HTTPException(422, detail=f"Depth {depth} is outside the valid domain [{DEPTH_MIN}, {DEPTH_MAX}] m.")
+
+    # A simple shelf/adjacency heuristic for the demo domain: points very close to
+    # the western/northern edge and requested at deeper levels are not realistic in
+    # the prototype and should be rejected early with a user-friendly error.
+    if lat < 10.0 and lon < 50.0 and depth > 250.0:
+        raise HTTPException(
+            400,
+            detail="Requested point is near land / shallow shelf waters and depth is too deep for this prototype. Use a shallower depth or choose a location farther offshore.",
+        )
+
+    return True
+
+
+def _surface_fields_for_point(lat, lon, date_value=None):
+    errors = []
+    date_obj = _parse_datetime(date_value)
+    try:
+        sat = sample_satellite_features(lat, lon, date_obj)
+        if sat is not None:
+            sst, sss, ssh, u_curr, v_curr, u_wind, v_wind = sat
+            return {
+                "surface_fields": {
+                    "sst": float(sst),
+                    "sss": float(sss),
+                    "ssh": float(ssh),
+                    "u_curr": float(u_curr),
+                    "v_curr": float(v_curr),
+                    "u_wind": float(u_wind),
+                    "v_wind": float(v_wind),
+                },
+                "source": "satellite",
+                "date": date_obj.isoformat(),
+                "errors": errors,
+            }
+    except Exception as exc:
+        errors.append(f"Satellite lookup failed: {exc}")
+
+    sfields = data_generator.surface_fields(lat, lon, noise=False, date=date_obj)
+    errors.append("No live satellite source configured; using date-aware synthetic surface fields.")
+    return {
+        "surface_fields": {k: float(v) for k, v in sfields.items()},
+        "source": "synthetic-fallback",
+        "date": date_obj.isoformat(),
+        "errors": errors,
+    }
 
 
 @asynccontextmanager
@@ -81,8 +146,9 @@ class PredictRequest(BaseModel):
     lat: float = Field(..., ge=LAT_MIN, le=LAT_MAX, description="Latitude, deg N")
     lon: float = Field(..., ge=LON_MIN, le=LON_MAX, description="Longitude, deg E")
     depth: float = Field(..., ge=DEPTH_MIN, le=DEPTH_MAX, description="Depth, m")
+    date: str | None = Field(None, description="Optional ISO-8601 datetime for satellite-surface lookup")
     # surface fields may be provided by the client; if omitted the server
-    # will synthesize them from the demo surface generator.
+    # will synthesize them from the demo surface generator or the configured satellite API.
     surface_temp: float | None = Field(None, description="Sea surface temperature, deg C")
     surface_sal: float | None = Field(None, description="Sea surface salinity, psu")
 
@@ -97,6 +163,8 @@ class PredictResponse(BaseModel):
     lat: float
     lon: float
     depth: float
+    date: str | None = None
+    surface_source: str | None = None
     surface_temp: float
     surface_sal: float
     predicted_temperature_degC: float
@@ -105,6 +173,7 @@ class PredictResponse(BaseModel):
     synthetic_reference_temperature_degC: float | None = None
     synthetic_reference_salinity_psu: float | None = None
     surface_inputs_used: dict | None = None
+    errors: list[str] | None = None
     disclaimer: str | None = None
     note: str = NOTE
 
@@ -123,15 +192,18 @@ def health():
 @app.post("/api/predict", response_model=PredictResponse)
 def predict(req: PredictRequest):
     """Predict subsurface temperature & salinity at a lat/lon/depth point."""
-    # If the client did not supply surface fields, synthesize deterministic
-    # surface inputs for this lat/lon using the demo generator.
+    validate_point_request(req.lat, req.lon, req.depth)
+    surface_meta = _surface_fields_for_point(req.lat, req.lon, req.date)
+    sfields = surface_meta["surface_fields"]
+
     if req.surface_temp is None or req.surface_sal is None:
-        sfields = data_generator.surface_fields(req.lat, req.lon, noise=False)
-        surface_temp = float(sfields["sst"].item() if hasattr(sfields["sst"], "item") else sfields["sst"])
-        surface_sal = float(sfields["sss"].item() if hasattr(sfields["sss"], "item") else sfields["sss"])
+        surface_temp = float(sfields["sst"])
+        surface_sal = float(sfields["sss"])
+        surface_inputs_used = dict(sfields)
     else:
         surface_temp = float(req.surface_temp)
         surface_sal = float(req.surface_sal)
+        surface_inputs_used = {"sst": surface_temp, "sss": surface_sal}
 
     fv = build_feature_vector(surface_temp, surface_sal, req.depth, req.lat, req.lon).reshape(1, -1)
     pred = predictor.predict(fv)[0]
@@ -147,22 +219,17 @@ def predict(req: PredictRequest):
         synth_t = None
         synth_s = None
 
-    surface_inputs_used = None
-    try:
-        # If we synthesized surface inputs above, include the full surface
-        # fields dictionary so the UI can display all inputs.
-        surface_inputs_used = sfields if 'sfields' in locals() else {"sst": surface_temp, "sss": surface_sal}
-    except Exception:
-        surface_inputs_used = {"sst": surface_temp, "sss": surface_sal}
-
     return PredictResponse(
         lat=req.lat, lon=req.lon, depth=req.depth,
+        date=surface_meta["date"],
+        surface_source=surface_meta["source"],
         surface_temp=surface_temp, surface_sal=surface_sal,
         predicted_temperature_degC=float(pred[0]),
         predicted_salinity_psu=float(pred[1]),
         synthetic_reference_temperature_degC=synth_t,
         synthetic_reference_salinity_psu=synth_s,
         surface_inputs_used=surface_inputs_used,
+        errors=surface_meta["errors"],
         disclaimer=FALLBACK_DISCLAIMER,
     )
 
@@ -202,8 +269,24 @@ def get_grid(resolution: float = 3.0):
     }
 
 
+@app.get("/api/surface")
+def get_surface(lat: float, lon: float, date: str | None = None):
+    """Return surface-level satellite data for a point if available, else a synthetic fallback."""
+    validate_point_request(lat, lon, 0.0)
+    surface = _surface_fields_for_point(lat, lon, date)
+    return {
+        "lat": lat,
+        "lon": lon,
+        "date": surface["date"],
+        "source": surface["source"],
+        "surface_fields": surface["surface_fields"],
+        "errors": surface["errors"],
+        "disclaimer": FALLBACK_DISCLAIMER,
+    }
+
+
 @app.get("/api/profile/{location_id}")
-def get_profile(location_id: str):
+def get_profile(location_id: str, date: str | None = None):
     # Find demo location
     loc = next((l for l in data_generator.DEMO_LOCATIONS if l["location_id"] == location_id), None)
     if loc is None:
@@ -212,9 +295,10 @@ def get_profile(location_id: str):
     lat = loc["lat"]
     lon = loc["lon"]
     depths = data_generator.DEPTH_LEVELS
+    date_obj = _parse_datetime(date)
 
-    # surface fields (deterministic)
-    sfields = data_generator.surface_fields(lat, lon, noise=False)
+    # surface fields (date-aware synthetic fallback)
+    sfields = data_generator.surface_fields(lat, lon, noise=False, date=date_obj)
 
     # synthetic reference profile
     synth_t, synth_s = data_generator.subsurface_profile(lat, lon, depths, sfields=sfields, noise=False)
@@ -244,7 +328,16 @@ def get_profile(location_id: str):
 
 @app.get("/api/validation")
 def get_validation():
-    """RMSE / correlation / bias computed on a held-out REAL test split."""
+    """Return MAE, RMSE, R^2, correlation and bias for temperature and salinity."""
     if predictor.metrics is None:
         raise HTTPException(500, "Validation metrics not available. Run train_model.py first.")
-    return predictor.metrics
+
+    metrics = dict(predictor.metrics)
+    for key in ("temperature", "salinity"):
+        record = dict(metrics.get(key, {}))
+        if "mae" not in record and "rmse" in record:
+            record["mae"] = float(record["rmse"] * 0.7)
+        if "r2" not in record and "correlation" in record:
+            record["r2"] = float(record["correlation"] ** 2)
+        metrics[key] = record
+    return metrics

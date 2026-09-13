@@ -16,7 +16,19 @@ LAT_MIN, LAT_MAX = -20.0, 30.0
 LON_MIN, LON_MAX = 30.0, 100.0
 DEPTH_MIN, DEPTH_MAX = 0.0, 1000.0
 
-REAL_FEATURE_NAMES = ["surface_temp", "surface_sal", "depth", "lat_norm", "lon_norm"]
+# New feature set uses satellite-derived surface observations + location/depth
+REAL_FEATURE_NAMES = [
+    "sst",
+    "sss",
+    "ssh",
+    "u_curr",
+    "v_curr",
+    "u_wind",
+    "v_wind",
+    "depth",
+    "lat_norm",
+    "lon_norm",
+]
 REAL_TARGET_NAMES = ["temperature", "salinity"]
 
 YEARS = [2023]
@@ -62,9 +74,12 @@ def fetch_month(date_start, date_end, pres_range=(0, 1000), retries=2):
     return None
 
 
+from satellite_data_loader import sample_satellite_features
+
+
 def build_rows_from_dataset(ds, min_levels=3):
     if ds is None:
-        return np.empty((0, 5), dtype=np.float32), np.empty((0, 2), dtype=np.float32)
+        return np.empty((0, 5), dtype=np.float32), np.empty((0, 2), dtype=np.float32), np.empty((0,), dtype="datetime64[ns]")
 
     df = ds.to_dataframe().reset_index()
     df = df.dropna(subset=["TEMP", "PSAL", "PRES", "LATITUDE", "LONGITUDE"])
@@ -74,43 +89,83 @@ def build_rows_from_dataset(ds, min_levels=3):
 
     group_cols = ["N_PROF"] if "N_PROF" in df.columns else ["LATITUDE", "LONGITUDE", "TIME"]
 
-    X_rows, y_rows = [], []
+    X_rows, y_rows, date_rows = [], [], []
+    kept_profiles = 0
+    dropped_profiles = 0
+    kept_rows = 0
+    dropped_rows = 0
     for _, g in df.groupby(group_cols):
         g = g.sort_values("PRES")
         if len(g) < min_levels:
             continue
         surf = g.iloc[0]
+        # attempt to sample satellite features at profile location/time
+        # capture the profile timestamp (surf["TIME"]) for later satellite matching
+        try:
+            profile_time = np.datetime64(surf["TIME"])
+        except Exception:
+            # fall back to string; will be converted when saving
+            profile_time = str(surf["TIME"]) if "TIME" in surf else None
+
+        sat = sample_satellite_features(surf["LATITUDE"], surf["LONGITUDE"], surf["TIME"])
+        if sat is None:
+            dropped_profiles += 1
+            dropped_rows += len(g)
+            continue
+        kept_profiles += 1
+        kept_rows += len(g)
+        sst, sss, ssh, u_curr, v_curr, u_wind, v_wind = sat
         lat_n, lon_n = normalize_latlon(surf["LATITUDE"], surf["LONGITUDE"])
         for _, row in g.iterrows():
-            X_rows.append([surf["TEMP"], surf["PSAL"], row["PRES"], lat_n, lon_n])
+            X_rows.append([
+                sst,
+                sss,
+                ssh,
+                u_curr,
+                v_curr,
+                u_wind,
+                v_wind,
+                row["PRES"],
+                lat_n,
+                lon_n,
+            ])
             y_rows.append([row["TEMP"], row["PSAL"]])
+            date_rows.append(profile_time)
 
-    X = np.array(X_rows, dtype=np.float32) if X_rows else np.empty((0, 5), dtype=np.float32)
+    X = np.array(X_rows, dtype=np.float32) if X_rows else np.empty((0, len(REAL_FEATURE_NAMES)), dtype=np.float32)
     y = np.array(y_rows, dtype=np.float32) if y_rows else np.empty((0, 2), dtype=np.float32)
-    return X, y
+    dates = np.array(date_rows, dtype="datetime64[ns]") if date_rows else np.empty((0,), dtype="datetime64[ns]")
+
+    print(f"Profiles kept: {kept_profiles}, profiles dropped (no satellite match): {dropped_profiles}")
+    print(f"Rows kept: {len(X)}, rows dropped due to missing satellite: {dropped_rows}")
+    return X, y, dates
 
 
 if __name__ == "__main__":
     print(f"Fetching REAL Argo profiles across the Indian Ocean Region "
           f"({LAT_MIN}-{LAT_MAX}N, {LON_MIN}-{LON_MAX}E) in monthly chunks...")
 
-    all_X, all_y = [], []
+    all_X, all_y, all_dates = [], [], []
     for start, end in _month_ranges(YEARS):
         print(f"  fetching {start} .. {end} ...")
         ds = fetch_month(start, end)
-        X, y = build_rows_from_dataset(ds)
+        X, y, dates = build_rows_from_dataset(ds)
         print(f"    -> {len(X)} rows")
         if len(X) > 0:
             all_X.append(X)
             all_y.append(y)
+            all_dates.append(dates)
         if all_X:
             np.save("argo_X_full_india.npy", np.concatenate(all_X, axis=0))
             np.save("argo_y_full_india.npy", np.concatenate(all_y, axis=0))
+            # save dates in the same row order
+            np.save("argo_dates_full_india.npy", np.concatenate(all_dates, axis=0))
 
     if all_X:
         X_final = np.concatenate(all_X, axis=0)
         y_final = np.concatenate(all_y, axis=0)
+        dates_final = np.concatenate(all_dates, axis=0)
         print(f"\nDONE. Built {len(X_final)} REAL training rows from real Argo floats across the Indian Ocean Region.")
-        print("Saved to argo_X_full_india.npy / argo_y_full_india.npy")
+        print("Saved to argo_X_full_india.npy / argo_y_full_india.npy / argo_dates_full_india.npy")
     else:
         print("\nNo data was fetched successfully - check errors above.")

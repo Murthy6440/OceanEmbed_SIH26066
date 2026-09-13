@@ -69,13 +69,15 @@ export const getLocations = () => request("/api/locations");
 export const getGrid = (resolution = 3.0) =>
   request(`/api/grid?resolution=${resolution}`);
 
-export const getProfile = (locationId) =>
-  request(`/api/profile/${encodeURIComponent(locationId)}`);
+export const getProfile = (locationId, date = null) => {
+  const qs = date ? `?date=${encodeURIComponent(date)}` : "";
+  return request(`/api/profile/${encodeURIComponent(locationId)}${qs}`);
+};
 
 export const predictPoint = (payload) =>
   request("/api/predict", { method: "POST", body: payload });
 
-export const getValidation = () => request("/api/validation");
+export const getValidation = () => request("/api/validation", { timeoutMs: 60000 });
 
 /**
  * Run many /api/predict calls with a bounded number in flight at once.
@@ -110,8 +112,8 @@ export async function predictBatch(points, { concurrency = 12 } = {}) {
  * GET /api/profile/{location_id}, but works for any lat/lon in the domain
  * (the profile endpoint only knows the fixed demo location IDs).
  */
-export async function buildCustomProfile(lat, lon, { concurrency = 8 } = {}) {
-  const points = DEPTH_LEVELS.map((depth) => ({ lat, lon, depth }));
+export async function buildCustomProfile(lat, lon, { concurrency = 8, date = null } = {}) {
+  const points = DEPTH_LEVELS.map((depth) => ({ lat, lon, depth, ...(date ? { date } : {}) }));
   const results = await predictBatch(points, { concurrency });
 
   const depth_m = [];
@@ -159,7 +161,7 @@ export async function buildCustomProfile(lat, lon, { concurrency = 8 } = {}) {
  * exact surface fields from /api/grid as overrides so the result is
  * consistent with what /api/profile or /api/predict would say for that cell.
  */
-export async function computeHeatmapAtDepth(gridSurface, depth, { concurrency = 16 } = {}) {
+export async function computeHeatmapAtDepth(gridSurface, depth, { concurrency = 16, date = null } = {}) {
   const { lat, lon, fields } = gridSurface;
 
   if (Number(depth) === 0) {
@@ -173,6 +175,7 @@ export async function computeHeatmapAtDepth(gridSurface, depth, { concurrency = 
         lat: lat[i],
         lon: lon[j],
         depth,
+        ...(date ? { date } : {}),
         sst: fields.sst[i][j],
         sss: fields.sss[i][j],
         ssh: fields.ssh[i][j],

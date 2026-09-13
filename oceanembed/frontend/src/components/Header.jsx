@@ -15,8 +15,7 @@ export default function Header({ backendStatus, apiBase }) {
         <div>
           <h1 className="brand-title">OceanEmbed</h1>
           <p className="brand-subtitle">
-            SIH26066 · Subsurface ocean parameter estimation from surface
-            observations
+            SIH26066 · Predicting subsurface ocean variables from surface observations
           </p>
         </div>
       </div>

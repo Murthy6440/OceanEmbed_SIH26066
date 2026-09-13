@@ -21,6 +21,10 @@ def rmse(a, b):
     return float(np.sqrt(np.mean((a - b) ** 2)))
 
 
+def mae(a, b):
+    return float(np.mean(np.abs(a - b)))
+
+
 def bias(pred, true):
     return float(np.mean(pred - true))
 
@@ -29,6 +33,16 @@ def pearson_corr(a, b):
     if np.std(a) == 0 or np.std(b) == 0:
         return 0.0
     return float(np.corrcoef(a, b)[0, 1])
+
+
+def r2_score(pred, true):
+    if np.var(true) == 0:
+        return 0.0
+    ss_res = np.sum((true - pred) ** 2)
+    ss_tot = np.sum((true - np.mean(true)) ** 2)
+    if ss_tot == 0:
+        return 0.0
+    return float(1.0 - ss_res / ss_tot)
 
 
 def main():
@@ -87,13 +101,17 @@ def main():
         "note": "Computed on REAL Argo float data (Indian Ocean region).",
         "n_test_samples": len(y_test),
         "temperature": {
+            "mae": mae(temp_pred, temp_true),
             "rmse": rmse(temp_pred, temp_true),
+            "r2": r2_score(temp_pred, temp_true),
             "correlation": pearson_corr(temp_pred, temp_true),
             "bias": bias(temp_pred, temp_true),
             "units": "deg C",
         },
         "salinity": {
+            "mae": mae(sal_pred, sal_true),
             "rmse": rmse(sal_pred, sal_true),
+            "r2": r2_score(sal_pred, sal_true),
             "correlation": pearson_corr(sal_pred, sal_true),
             "bias": bias(sal_pred, sal_true),
             "units": "psu",

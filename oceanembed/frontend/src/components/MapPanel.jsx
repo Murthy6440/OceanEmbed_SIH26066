@@ -1,13 +1,41 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   MapContainer,
   TileLayer,
   Rectangle,
   CircleMarker,
   Tooltip,
+  useMap,
   useMapEvents,
 } from "react-leaflet";
 import { tempToColor } from "../utils/colorScale.js";
+
+function MapFocus({ selectedLocation }) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!selectedLocation) return;
+    map.flyTo([selectedLocation.lat, selectedLocation.lon], 6, {
+      animate: true,
+      duration: 1.2,
+    });
+  }, [map, selectedLocation]);
+
+  return null;
+}
+
+function ZoomTracker({ onZoomChange }) {
+  const map = useMap();
+
+  useEffect(() => {
+    const updateZoom = () => onZoomChange(map.getZoom());
+    updateZoom();
+    map.on("zoomend", updateZoom);
+    return () => map.off("zoomend", updateZoom);
+  }, [map, onZoomChange]);
+
+  return null;
+}
 
 function ClickHandler({ domain, onMapClick }) {
   useMapEvents({
@@ -33,23 +61,31 @@ export default function MapPanel({
 }) {
   const [latMin, latMax] = domain.lat_range_degN;
   const [lonMin, lonMax] = domain.lon_range_degE;
+  const [mapZoom, setMapZoom] = useState(4);
   const bounds = [
     [latMin, lonMin],
     [latMax, lonMax],
   ];
   const center = [(latMin + latMax) / 2, (lonMin + lonMax) / 2];
 
+  const heatmapStride = useMemo(() => {
+    if (mapZoom >= 7) return 4;
+    if (mapZoom >= 5) return 2;
+    return 1;
+  }, [mapZoom]);
+
   const halfRes = useMemo(() => {
     if (!gridSurface || gridSurface.lat.length < 2) return 1.5;
-    return Math.abs(gridSurface.lat[1] - gridSurface.lat[0]) / 2;
-  }, [gridSurface]);
+    const baseStep = Math.abs(gridSurface.lat[1] - gridSurface.lat[0]);
+    return (baseStep * heatmapStride) / 2;
+  }, [gridSurface, heatmapStride]);
 
   const cells = useMemo(() => {
     if (!gridSurface || !heatmap) return [];
     const out = [];
     const { lat, lon } = gridSurface;
-    for (let i = 0; i < lat.length; i++) {
-      for (let j = 0; j < lon.length; j++) {
+    for (let i = 0; i < lat.length; i += heatmapStride) {
+      for (let j = 0; j < lon.length; j += heatmapStride) {
         const value = heatmap[i] ? heatmap[i][j] : null;
         out.push({
           key: `${i}-${j}`,
@@ -62,7 +98,7 @@ export default function MapPanel({
       }
     }
     return out;
-  }, [gridSurface, heatmap, halfRes]);
+  }, [gridSurface, heatmap, halfRes, heatmapStride]);
 
   return (
     <div className="map-wrap">
@@ -74,11 +110,14 @@ export default function MapPanel({
         maxBounds={bounds}
         maxBoundsViscosity={1.0}
         scrollWheelZoom
+        preferCanvas
       >
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
+        <ZoomTracker onZoomChange={setMapZoom} />
+        <MapFocus selectedLocation={selectedLocation} />
         <ClickHandler domain={domain} onMapClick={onMapClick} />
 
         {cells.map((c) => (

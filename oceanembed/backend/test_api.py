@@ -48,18 +48,32 @@ def main(client):
         "POST /api/predict (with surface overrides)",
         client.post("/api/predict", json={
             "lat": 12.0, "lon": 85.0, "depth": 500.0,
-            "sst": 29.0, "sss": 33.5, "ssh": 0.1,
-            "u_curr": 0.2, "v_curr": -0.1, "u_wind": 6.0, "v_wind": 1.5,
+            "surface_temp": 29.0, "surface_sal": 33.5,
         }),
     )
+    assert "surface_temp" in pred2
     assert pred2["surface_inputs_used"]["sst"] == 29.0
 
     r_bad = client.post("/api/predict", json={"lat": 90.0, "lon": 70.0, "depth": 100.0})
     print(f"\n=== POST /api/predict lat=90 out-of-domain -> HTTP {r_bad.status_code} (expect 422) ===")
     assert r_bad.status_code == 422
 
+    r_shallow = client.post("/api/predict", json={"lat": 8.0, "lon": 47.5, "depth": 500.0})
+    print(f"\n=== POST /api/predict near-land too-deep -> HTTP {r_shallow.status_code} (expect 400) ===")
+    assert r_shallow.status_code == 400
+
+    surface = show(
+        "GET /api/surface?lat=15&lon=70&date=2024-01-15T12:00:00",
+        client.get("/api/surface?lat=15&lon=70&date=2024-01-15T12:00:00"),
+    )
+    assert "surface_fields" in surface
+    assert "errors" in surface
+    assert isinstance(surface["surface_fields"]["sst"], (int, float))
+
     val = show("GET /api/validation", client.get("/api/validation"))
     assert "temperature" in val and "salinity" in val
+    assert "mae" in val["temperature"]
+    assert "r2" in val["temperature"]
     assert val["temperature"]["rmse"] > 0
 
     print("\n\nALL ENDPOINT TESTS PASSED ✅")

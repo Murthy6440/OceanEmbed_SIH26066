@@ -5,7 +5,7 @@ export default function DisclaimerBanner({ text }) {
     <div className="disclaimer-banner" role="note">
       <span className="disclaimer-icon">⚠️</span>
       <span>
-        <b>Demo data notice —</b> {text}
+        <b>Prototype notice —</b> {text}
       </span>
     </div>
   );

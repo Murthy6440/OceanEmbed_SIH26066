@@ -24,6 +24,7 @@ import ModelInputsCard from "./components/ModelInputsCard.jsx";
 import ProfileChart from "./components/ProfileChart.jsx";
 import ComparisonChart from "./components/ComparisonChart.jsx";
 import ValidationScatter from "./components/ValidationScatter.jsx";
+import DepthSurfaceChart from "./components/DepthSurfaceChart.jsx";
 
 const GRID_RESOLUTION_DEG = 3.0;
 // Starts at the surface (0 m) so the initial map layer matches /api/grid's
@@ -42,6 +43,7 @@ export default function App() {
   const [heatmapLoading, setHeatmapLoading] = useState(false);
 
   const [depth, setDepth] = useState(DEFAULT_DEPTH);
+  const [selectedDate, setSelectedDate] = useState("2024-01-15T12:00:00");
 
   const [selectedLocation, setSelectedLocation] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -154,18 +156,33 @@ export default function App() {
       try {
         const grid = await computeHeatmapAtDepth(gridSurface, targetDepth, {
           concurrency: 16,
+          date: selectedDate,
         });
         if (reqId === heatmapRequestId.current) setHeatmap(grid);
       } finally {
         if (reqId === heatmapRequestId.current) setHeatmapLoading(false);
       }
     },
-    [gridSurface]
+    [gridSurface, selectedDate]
   );
 
   const handleDepthCommit = useCallback(() => {
     refreshHeatmap(depth);
   }, [depth, refreshHeatmap]);
+
+  useEffect(() => {
+    if (!selectedLocation) return;
+    if (selectedLocation.location_id) {
+      loadProfileForDemoLocation(selectedLocation);
+      return;
+    }
+    loadProfileForCustomPoint(selectedLocation.lat, selectedLocation.lon);
+  }, [selectedDate]);
+
+  useEffect(() => {
+    if (!selectedLocation || !gridSurface) return;
+    refreshHeatmap(depth);
+  }, [selectedDate, depth, gridSurface, refreshHeatmap]);
 
   // --------------------------------------------------------- location logic
   async function loadProfileForDemoLocation(loc) {
@@ -174,7 +191,7 @@ export default function App() {
     setProfile(null);
     setProfileError(null);
     try {
-      const p = await getProfile(loc.location_id);
+      const p = await getProfile(loc.location_id, selectedDate);
       if (reqId !== profileRequestId.current) return;
       setProfile({
         location: p.location,
@@ -201,7 +218,7 @@ export default function App() {
     setProfile(null);
     setProfileError(null);
     try {
-      const p = await buildCustomProfile(lat, lon, { concurrency: 8 });
+      const p = await buildCustomProfile(lat, lon, { concurrency: 8, date: selectedDate });
       if (reqId !== profileRequestId.current) return;
       setProfile(p);
     } catch (err) {
@@ -232,13 +249,16 @@ export default function App() {
   // ----------------------------------------------------- generate prediction
   async function handleGeneratePrediction() {
     if (!selectedLocation) return;
+
     setPredictionLoading(true);
     setPredictionError(null);
+
     try {
       const result = await predictPoint({
         lat: selectedLocation.lat,
         lon: selectedLocation.lon,
         depth,
+        date: selectedDate,
       });
       setPrediction(result);
     } catch (err) {
@@ -303,6 +323,8 @@ export default function App() {
           onDemoAlert={handleDemoAlert}
           predictionLoading={predictionLoading}
           backendOnline={backendStatus === "online"}
+          selectedDate={selectedDate}
+          onDateChange={setSelectedDate}
         />
 
         <div className="right-column">
@@ -325,6 +347,14 @@ export default function App() {
         <ProfileChart profile={profile} loading={profileLoading} error={profileError} />
         <ComparisonChart profile={profile} loading={profileLoading} error={profileError} />
         <ValidationScatter profile={profile} loading={profileLoading} error={profileError} />
+      </div>
+
+      <div className="charts-row" style={{ marginTop: 20 }}>
+        <DepthSurfaceChart
+          gridSurface={gridSurface}
+          heatmap={heatmap}
+          loading={heatmapLoading}
+        />
       </div>
 
     </div>

@@ -14,6 +14,7 @@ present anything produced from this module as real oceanographic data.
 """
 
 import numpy as np
+from datetime import datetime
 
 # ---------------------------------------------------------------------------
 # Domain definition (matches the SIH26066 problem-statement region: North
@@ -40,12 +41,15 @@ def normalize_latlon(lat, lon):
     return lat_n, lon_n
 
 
-def surface_fields(lat, lon, rng=None, noise=True):
+def surface_fields(lat, lon, rng=None, noise=True, date=None):
     """
     Generate SYNTHETIC surface fields at given lat/lon (scalars or arrays
     of matching shape). Returns a dict of numpy arrays / scalars for:
       sst (deg C), sss (psu), ssh/sla (m),
       u_curr, v_curr (m/s surface currents), u_wind, v_wind (m/s winds)
+
+    When a datetime is supplied, the synthetic surface field includes a small
+    seasonal and diurnal signal so the prototype visibly changes with date/time.
     """
     if rng is None:
         rng = np.random.default_rng(_DEFAULT_SEED)
@@ -53,16 +57,27 @@ def surface_fields(lat, lon, rng=None, noise=True):
     lat_n, lon_n = normalize_latlon(lat, lon)
     shape = np.shape(lat_n)
 
+    if date is None:
+        date = datetime.utcnow()
+
+    if isinstance(date, str):
+        date = datetime.fromisoformat(date.replace("Z", "+00:00"))
+
+    doy = date.timetuple().tm_yday
+    hour = date.hour + date.minute / 60.0 + date.second / 3600.0
+    season_cycle = np.sin(2 * np.pi * (doy - 80) / 365.0)
+    diurnal_cycle = np.sin(2 * np.pi * (hour - 12) / 24.0)
+
     def eps(scale):
         return rng.normal(0, scale, size=shape) if noise else 0.0
 
-    sst = 29.5 - 3.0 * lat_n + 0.8 * np.sin(2 * np.pi * lon_n) + eps(0.3)
-    sss = 35.3 - 1.8 * lon_n + 0.4 * np.sin(2 * np.pi * lat_n) + eps(0.15)
-    ssh = 0.30 * np.sin(4 * np.pi * lat_n) * np.cos(3 * np.pi * lon_n) + eps(0.05)
-    u_curr = 0.30 * np.cos(2 * np.pi * lat_n) * np.sin(2 * np.pi * lon_n) + eps(0.05)
-    v_curr = -0.30 * np.sin(2 * np.pi * lat_n) * np.cos(2 * np.pi * lon_n) + eps(0.05)
-    u_wind = 5.0 + 3.0 * np.sin(2 * np.pi * lon_n) + eps(1.0)
-    v_wind = 2.0 * np.cos(2 * np.pi * lat_n) + eps(1.0)
+    sst = 29.5 - 3.0 * lat_n + 0.8 * np.sin(2 * np.pi * lon_n) + 0.9 * season_cycle + 0.25 * diurnal_cycle + eps(0.3)
+    sss = 35.3 - 1.8 * lon_n + 0.4 * np.sin(2 * np.pi * lat_n) - 0.15 * season_cycle + eps(0.15)
+    ssh = 0.30 * np.sin(4 * np.pi * lat_n) * np.cos(3 * np.pi * lon_n) + 0.05 * diurnal_cycle + eps(0.05)
+    u_curr = 0.30 * np.cos(2 * np.pi * lat_n) * np.sin(2 * np.pi * lon_n) + 0.08 * np.cos(2 * np.pi * (hour / 24.0)) + eps(0.05)
+    v_curr = -0.30 * np.sin(2 * np.pi * lat_n) * np.cos(2 * np.pi * lon_n) + 0.08 * np.sin(2 * np.pi * (hour / 24.0)) + eps(0.05)
+    u_wind = 5.0 + 3.0 * np.sin(2 * np.pi * lon_n) + 1.4 * season_cycle + 0.8 * diurnal_cycle + eps(1.0)
+    v_wind = 2.0 * np.cos(2 * np.pi * lat_n) - 0.6 * diurnal_cycle + eps(1.0)
 
     return {
         "sst": sst, "sss": sss, "ssh": ssh,
