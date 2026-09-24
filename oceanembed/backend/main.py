@@ -11,6 +11,8 @@ argo_data_loader_full_india.py for data provenance.
 Run:
     uvicorn main:app --reload --port 8000
 """
+import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -20,6 +22,8 @@ import data_generator
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger("uvicorn.error")
 
 from model import OceanEmbedPredictor, MODEL_PATH
 from satellite_data_loader import sample_satellite_features
@@ -41,6 +45,9 @@ FALLBACK_DISCLAIMER = (
 )
 
 predictor = OceanEmbedPredictor()
+model_ready = False
+model_load_error = None
+
 
 def normalize_latlon(lat, lon):
     lat_n = (lat - LAT_MIN) / (LAT_MAX - LAT_MIN)
@@ -117,12 +124,35 @@ def _surface_fields_for_point(lat, lon, date_value=None):
     }
 
 
+async def _load_or_train_model():
+    global model_ready, model_load_error
+
+    model_ready = False
+    model_load_error = None
+
+    try:
+        logger.info("Starting model initialization")
+        if not os.path.exists(MODEL_PATH):
+            logger.warning("Model file not found at %s; training model before startup", MODEL_PATH)
+            import train_model
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, train_model.main)
+
+        logger.info("Loading predictor model")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, predictor.load)
+
+        model_ready = True
+        logger.info("Model initialization complete")
+    except Exception as exc:
+        model_load_error = str(exc)
+        logger.exception("Model initialization failed: %s", exc)
+        model_ready = False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if not os.path.exists(MODEL_PATH):
-        import train_model
-        train_model.main()
-    predictor.load()
+    asyncio.create_task(_load_or_train_model())
     yield
 
 
@@ -183,7 +213,8 @@ def health():
     return {
         "status": "ok",
         "service": "OceanEmbed SIH26066 backend",
-        "model_loaded": predictor.loaded,
+        "model_ready": model_ready,
+        "model_load_error": model_load_error,
         "note": NOTE,
         "disclaimer": FALLBACK_DISCLAIMER,
     }
@@ -192,6 +223,9 @@ def health():
 @app.post("/api/predict", response_model=PredictResponse)
 def predict(req: PredictRequest):
     """Predict subsurface temperature & salinity at a lat/lon/depth point."""
+    if not model_ready:
+        raise HTTPException(503, detail="Model is still loading/training. Try again shortly.")
+
     validate_point_request(req.lat, req.lon, req.depth)
     surface_meta = _surface_fields_for_point(req.lat, req.lon, req.date)
     sfields = surface_meta["surface_fields"]
