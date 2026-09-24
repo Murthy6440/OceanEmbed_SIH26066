@@ -5,7 +5,7 @@
 // fabricates ocean data client-side.
 
 export const API_BASE = (
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"
+  import.meta.env.VITE_API_BASE_URL || "https://oceanembed-sih26066.onrender.com"
 ).replace(/\/+$/, "");
 
 // Fallback domain / depth levels, used only until /api/locations responds.

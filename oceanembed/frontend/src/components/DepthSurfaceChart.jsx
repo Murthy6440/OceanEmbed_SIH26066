@@ -86,7 +86,7 @@ export default function DepthSurfaceChart({ gridSurface, heatmap, loading }) {
             },
           }}
           config={baseConfig}
-          style={{ width: "100%", height: "360px" }}
+          style={{ width: "100%", height: "300px" }}
           useResizeHandler
         />
       )}
